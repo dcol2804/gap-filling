@@ -15,13 +15,43 @@
 library(BHPMF)
 
 setwd("BHPMF")
-tmp.dir <- dirname("output_data/tmp/")
+tmp.dir <- dirname("output_data/SLA_comparison/tmp/")
 
-data = read.csv("input_data/summarised_austraits_traits.csv", stringsAsFactors = F)
+data_original = read.csv("input_data/climate_vars.csv", stringsAsFactors = F)
+
+data_original = data_original[, c("X", "taxon_name", "genus", "family", "leaf_mass_per_area", "seed_dry_mass", "leaf_length", "leaf_width", "plant_height")]
+
+set.seed(123)
+
+#Randomly assign NA to 10% of the data
+
+data = data_original
+
+data$original_leaf_mass_per_area = data$leaf_mass_per_area
+data$leaf_mass_per_area[sample(which(!is.na(data$leaf_mass_per_area)), length(which(!is.na(data$leaf_mass_per_area))) * 0.10)] <-
+NA
+
+
+
+#data$subset_of_blanks = ifelse(is.na(data$leaf_mass_per_area)&!is.na(data_original$leaf_mass_per_area), "test", NA)
+
+data = data[-which(is.na(data$leaf_mass_per_area)&
+is.na(data$leaf_length)&
+is.na(data$leaf_width)&
+is.na(data$leaf_mass_per_area)&
+is.na(data$seed_dry_mass)),]
+
+
+
+write.csv(data, "output_data/SLA_comparison/original_data.csv", row.names= F)
+
+data = data[, which(names(data) != "original_leaf_mass_per_area")]
 
 hierarchy.info = data[,c(1, 2, 3, 4)]
 trait.info.original = data[,c(5:length(data))]
 trait.info = data[,c(5:length(data))]
+
+
 
 #############
 back_trans_pars <- list()
@@ -50,21 +80,21 @@ for(i in 1:ncol(trait.info)){
   
 }
 
-write.csv(trait.info, "output_data/transformed_original.csv", row.names = F)
+write.csv(trait.info, "output_data/SLA_comparison/transformed_original_2.csv", row.names = F)
 
 trait.info = as.matrix(trait.info)
 hierarchy.info = as.matrix(hierarchy.info)
 
 GapFilling(trait.info, hierarchy.info, tuning = F,
-           mean.gap.filled.output.path = paste0(tmp.dir,"/mean_gap_filled.txt"),
-           std.gap.filled.output.path= paste0(tmp.dir,"/std_gap_filled.txt"), tmp.dir=tmp.dir)
+           mean.gap.filled.output.path = paste0(tmp.dir,"/mean_gap_filled_2.txt"),
+           std.gap.filled.output.path= paste0(tmp.dir,"/std_gap_filled_2.txt"), tmp.dir=tmp.dir)
 
 
 head(trait.info)
 
-output = read.delim("output_data/mean_gap_filled.txt")
+output = read.delim("output_data/SLA_comparison/mean_gap_filled_2.txt")
 
-write.csv(output, row.names = F, "output_data/untransformed_model_output.csv")
+write.csv(output, row.names = F, "output_data/SLA_comparison/untransformed_model_output_2.csv")
 
 # back transform the data
 for (i in 1:ncol(output) ){
@@ -87,11 +117,11 @@ for (i in 1:ncol(output) ){
   
 }
 
-write.csv(output, row.names = F, "output_data/transformed_model_output.csv")
+write.csv(output, row.names = F, "output_data/SLA_comparison/transformed_model_output_2.csv")
 
-output2 = as.data.frame(read.delim("output_data/std_gap_filled.txt"))
+output2 = as.data.frame(read.delim("output_data/SLA_comparison/std_gap_filled_2.txt"))
 
-write.csv(output2, row.names = F, "output_data/untransformed_model_std.csv")
+write.csv(output2, row.names = F, "output_data/SLA_comparison/untransformed_model_std_2.csv")
 
 # back transform the data
 for (i in 1:ncol(output2) ){
@@ -114,14 +144,8 @@ for (i in 1:ncol(output2) ){
   
 }
 
-write.csv(output2, row.names = F, "output_data/transformed_model_std.csv")
+write.csv(output2, row.names = F, "output_data/SLA_comparison/transformed_model_std_2.csv")
 
-# I want to plot the known versus the predicted values for each trait 
-# To get the known value, I'll get the column in "original. To get the predicted, I'll get the trait info.
-# make the vector of predicted plant heights that we know them for. 
-output = cbind(hierarchy.info, output)
-
-# The only ones in their family often have crazy values
 
 # If you want to calculate the total RMSE separately, uncomment the following line and run
 # It can take a while.
