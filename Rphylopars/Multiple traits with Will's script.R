@@ -27,18 +27,18 @@ data_in = aus %>% select(taxon_name,
                          leaf_width.log)
 
 # Code to create the phylogeny - only needs to be done once
-
-# df <-
+#aus_taxa = left_join(austraits$traits, austraits$taxa %>% select("taxon_name", "genus", "family"), by = "taxon_name")
+# taxa <-
 #   data.frame(
-#     species = aus$taxon_name,
-#     genus = aus$genus,
-#     family = aus$family
+#     species = aus_taxa$taxon_name,
+#     genus = aus_taxa$genus,
+#     family = aus_taxa$family
 #   )
 # 
-# df <- distinct(df)
+# taxa <- distinct(taxa)
 
 
-# tree <- phylo.maker(df)
+# tree <- phylo.maker(taxa)
 # saveRDS(tree,"Rphylopars/downloads/autraitstree.rds")
 tree = readRDS("Rphylopars/downloads/autraitstree.rds")
 phylo <- tree[[1]]

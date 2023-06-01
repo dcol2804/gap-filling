@@ -1,0 +1,395 @@
+---
+title: "Imputation"
+author: "David Coleman"
+date: "2023-05-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+
+```
+
+## Gap-filling AusTraits data
+
+Missingness is inherent to datasets in the biological sciences and the trait data assembled in the AusTraits plant trait database is no exception. Take for example this subset of numeric trait values below. 
+
+
+```{r echo = F}
+aus <- read_csv("Assembling_trait_matrix/data/230403_summarised_austraits_traits.csv", show_col_types = FALSE)
+
+missingness = aus %>% summarise(across(leaf_length:leaf_lifespan,  list(count = ~ sum(is.na(.))))) %>% 
+                     pivot_longer(cols=everything(), names_to="trait_name", values_to="missing_observations") %>% 
+                     mutate(percent_missing = round(missing_observations/nrow(df)*100)) %>% 
+                     arrange(percent_missing)
+        
+knitr::kable(missingness)
+
+```
+
+The summary table shows us that a few of the traits have over 60% taxonomic coverage (plant height, leaf length and leaf width) but the majority are very sparsely represented across the complete list of Australia's taxa.
+
+Unfortunately, many trait metrics that are used to represent the functionality of the ecosystems require a complete taxon-trait matrix with no gaps (Nock et al., 2016; Pakeman, 2014). 
+
+This is where gap-filling techniques can help. Gap-filling is the statistical imputation of missing data. 
+
+The intention of imputing values is to imitate the qualities and metrics such as the distribution and summary statistics of a complete dataset (Van Buuren, 2018). Imputation does not mean prediction and although the gap-filled values should be plausible, using the gap-filled datasets for individual taxonomic analyses are generally not advisable (Johnson et al., 2021; Joswig et al., 2022). 
+
+
+
+## Gap-filling
+
+Before beginning the process of data imputation, the steps outlined below (many of which are explained in greater detail by Johnson (2021) or Joswig (2022)) can help:
+
+First, rule out complete cases – that is, removal of any missing values of the dataset - as a viable option for the data analysis. This is the simplest way to deal with missing data and can sometimes outperform imputation depending on the sampling of the dataset and the needs of the data analysis.
+
+Secondly, it is advisable to maximise the amount of “real” data in the analysis wherever possible, either from published sources or other datasets. The degree of missingness is highly important to the success of the imputation and the error of the imputed values increases with increasing missingness. Although several thresholds of missingness have been put forward (e.g. 50% missing data) (Madley-Dowd et al., 2019), there is no fixed amount of missingness beyond which imputation should not be used. Rather, there are varying degrees of accuracy and confidence in the imputed values which may or may not be suitable for the analysis. 
+
+Thirdly, supplementary datasets can often assist in the imputation process when traits are poorly represented across a taxonomic dataset. For example, to gap-fill leaf area in the example above (77% missing), the more complete traits of leaf length and leaf width probably correlate to some degree with leaf area and may therefore be helpful. Alternatively, many plant traits are correlated with taxonomy and with environmental variables such as climate, so adding taxonomic and environmental datasets to the existing trait matrix may also assist with the imputation process.
+
+
+
+## Gap-filling techniques
+
+The choice of gap-filling methodologies has increased rapidly over recent years and there are now more than 160 different R packages to help researchers impute missing data (Johnson et al., 2021). We will use one here (Rphylopars) as a case study of how to go about creating and evaluating gap-filled datasets and have provided example code to adapt the technique to a second package (BHPMF).
+
+
+## Preparing the data
+
+Rphylopars (Goolsby et al., 2017) is an R package that uses phylogenetic information in
+tandem with other trait information to estimate missing values across a taxon-trait matrix.
+
+Rphylopars requires a phylogenetic tree of all taxa to impute values which can be generated using the V.PhyloMaker2 package (Jin & Qian, 2019). The following code includes a way to generate a taxonomic phylogeny with three levels: family, genus and species, as recorded in AusTraits. Due to the amount of time required to generate the large phylogenetic tree, the code to generate the tree object is commented out, and the tree has been stored and can be reread into R.
+
+```{r echo=FALSE}
+
+# install and load the package
+#install.packages("Rphylopars")
+library(Rphylopars)
+library(V.PhyloMaker2)
+
+# Code to create the phylogeny - only needs to be done once
+#aus_taxa = left_join(austraits$traits, austraits$taxa %>% select("taxon_name", "genus", "family"), by = "taxon_name")
+# taxa <-
+#   data.frame(
+#     species = aus_taxa$taxon_name,
+#     genus = aus_taxa$genus,
+#     family = aus_taxa$family
+#   )
+# 
+# taxa <- distinct(taxa)
+# tree <- phylo.maker(taxa)
+# saveRDS(tree,"Rphylopars/downloads/autraitstree.rds")
+
+# read in the pylogeny
+tree = readRDS("Rphylopars/downloads/autraitstree.rds")
+
+phylo <- tree[[1]]
+
+
+
+```
+
+
+## Data transformation
+
+Most numeric traits in AusTraits are positively skewed and require log transformation before analysis.
+
+```{r}
+
+aus = aus %>% mutate(across(leaf_length:leaf_C_per_dry_mass, ~log10(.x), .names="log10_{.col}"),
+                     # a formatting step necessary for the Rphylopars package
+                     species = gsub(" ", "_", taxon_name)) %>% 
+                     select(-taxon_name) %>% 
+                     # remove taxa not in the phylogentic tree
+                     filter(species %in% phylo$tip.label)
+
+#select some traits that will help predict leaf area
+data_in = aus %>% select(
+                         species,
+                         log10_leaf_area, 
+                         log10_leaf_length,
+                         log10_leaf_width,
+                         log10_leaf_mass_per_area
+                         ) %>% arrange(species)
+
+```
+
+Its always best practice to look at the data before making any imputations to ensure there are not large parts of the phylogeny or trait distribution that are missing. 
+
+```{r}
+
+#trait
+hist(data_in$log10_leaf_area, main = "leaf area trait data", xlab = "log leaf area (mm2)")
+
+#phylogeny gaps
+test = aus %>% filter(is.na(log10_leaf_area),is.na(log10_leaf_length), is.na(log10_leaf_width), is.na(log10_leaf_mass_per_area)) 
+
+test1 = aus %>% filter(!species %in% test$species) %>% group_by(genus) %>% summarise(present = n())
+
+test2 = test %>% group_by(genus) %>% summarise(missing = n())
+
+test3 = full_join(test1, test2, by = "genus") %>% mutate(ratio = present/missing)
+
+
+```
+
+## Now to the actual gap-filling
+
+In order to assess the validity of the imputation, we will fit a linear model between the some imputed and observed data. This requires removing a third or so of leaf area observations from the dataset, running the imputation function and then assessing how closely the imputed values align with this subset of leaf area observations. 
+
+```{r}
+
+# Create a vector of a 33% random sample of leaf areas 
+values_to_NA = sample(which(!is.na(data_in$log10_leaf_area)), length(which(!is.na(data_in$log10_leaf_area)))*0.33)
+
+# replace these with NA
+data_in$log10_leaf_area[values_to_NA] = NA
+
+# Run the phylogenetic comparative analysis
+phylopars_result <-
+  phylopars(trait_data = data_in,
+            tree = phylo,
+            model = "BM")
+
+
+```
+
+Time passes...
+
+Once the imputation is complete, calculate some metrics for assessment of success of the imputation and which will be useful to compare this imputation with others.
+
+```{r}
+# Extract the estimated values
+estimated_values <- phylopars_result$anc_recon
+
+est = rownames_to_column(data.frame(estimated_values), var = "species") %>% 
+  # The output computes values for all levels of the phylogeny, hence filter to the original species
+  filter(species %in% data_in$species)
+
+
+# add back in the original log transformed leaf area
+out = left_join(est, aus %>% rename("leaf_area_original"= "log10_leaf_area") %>% select(species, leaf_area_original)) %>% arrange(species)
+
+
+# filter to just those that were removed
+missing_data = out[values_to_NA,]
+
+# Visually assess
+missing_data %>%
+  ggplot(aes(x = leaf_area_original, y = log10_leaf_area)) + geom_point()
+
+# R2
+R2 = summary(lm(leaf_area_original ~ log10_leaf_area, data = missing_data))$adj.r.squared
+
+#RMSE
+RMSE = sqrt(mean((missing_data$leaf_area_original - missing_data$log10_leaf_area)^2))
+
+
+```
+
+So far we have assessed the success of the imputation using the linear relationship between observed data and imputed values, metrics that are appropriate for a broad scope imputation. A broad scope imputation is where one set of imputations may be used for many projects and analyses (Van Buuren, 2018).
+
+In contrast, an imputation with a narrow scope aims to estimate some quantity from the complete dataset, for example the slope of a relationship between a trait and some response variable. In these cases, a separate imputed dataset is required which is tailored to best estimate quantity. Other metrics such as the slope of the trait-response are required to assess the success of the imputation (Johnson et al., 2021).
+
+
+## Variance
+
+Rphylopars and other gap-filling packages also normally provide a measure of uncertainty (the Variance) for each imputed value which can also give a measure of the success of the imputation - lower mean uncertainty over all imputed values in a dataset suggests a more reliable imputation. The highest values of uncertainty are generally associated with taxa that have little or no input data for the species or within the phylogeny, have high diversity for this trait within the phylogeny or a combination of both. 
+
+```{r}
+
+# Uncertainty
+estimated_variance = phylopars_result$anc_var
+
+rownames_to_column(data.frame(estimated_variance), var = "species") %>% 
+  filter(species %in% data_in$species) %>% arrange(species) -> est1
+
+# look at the mean and median Variance for the imputed observations
+mean_var = mean(est1$log10_leaf_area[est1$log10_leaf_area != 0])
+median_var = median(est1$log10_leaf_area[est1$log10_leaf_area != 0])
+
+
+```
+
+In a sparse taxon-trait matrix, it will probably be necessary to exclude imputed values from the dataset. There are several protocols for selecting the imputed values for exclusion. These include the removal of imputed values outside the range of original values, removal of observations over a certain threshold of uncertainty or removal of clades that have poor coverage in the trait dataset. Techniques will vary depending on the desired outcome of the analysis but it is always best practice to record and explain how this step was completed. 
+
+
+## Improving the result
+
+There are many other ways to optimise the imputation when using imputation tools like Rphylopars
+
+# 1
+
+Loop the data and store the metrics over many samples to assess their consistency over different sampling patterns of the data.
+
+```{r}
+
+out = data.frame()
+
+
+for (i in 1:3){
+
+# For each loop, a different but reproducible random sample of leaf area observations is removed.  
+set.seed(i)
+values_to_NA = sample(which(!is.na(data_in$log10_leaf_area)), length(which(!is.na(data_in$log10_leaf_area)))*0.33)
+
+data_in$log10_leaf_area[values_to_NA] = NA
+
+# Run the phylogenetic comparative analysis
+phylopars_result <-
+  phylopars(trait_data = data_in,
+            tree = phylo,
+            model = "BM")
+
+# Extract the estimated values
+estimated_values <- phylopars_result$anc_recon
+
+est = rownames_to_column(data.frame(estimated_values), var = "species") %>% 
+  # The output computes values for all levels of the phylogeny, hence filter to the original species
+  filter(species %in% data_in$species)
+
+
+# add back in the original log transformed leaf area
+est = left_join(est, aus %>% rename("leaf_area_original"= "log10_leaf_area") %>% select(species, leaf_area_original)) %>% arrange(species)
+
+
+# filter to just those that were removed
+missing_data = est[values_to_NA,]
+
+# R2
+r = summary(lm(leaf_area_original ~ log10_leaf_area, data = missing_data))$adj.r.squared
+
+#RMSE
+RMSE = sqrt(mean((missing_data$leaf_area_original - missing_data$log10_leaf_area)^2))
+
+# Uncertainty
+estimated_variance = phylopars_result$anc_var
+
+rownames_to_column(data.frame(estimated_variance), var = "species") %>% 
+  filter(species %in% data_in$species) %>% arrange(species) -> est1
+
+# look at the mean and median Variance for the imputed observations
+mean_var = mean(est1$log10_leaf_area[est1$log10_leaf_area != 0])
+median_var = median(est1$log10_leaf_area[est1$log10_leaf_area != 0])
+
+metrics = data.frame(rep = i, R2 = r, mean_variance = mean_var, median_variance = median_var)
+
+# store the result
+out = rbind(out, metrics)
+
+}
+
+```
+
+# 2
+
+Repeat the analysis with other external data and see if metrics improve. MAT and MAP. We will use the same AusTraits data as above but with two extra climate variables, Mean Annual Temperature (MAT) and Mean Annual Precipitation (MAP). These may be helpful in the imputation process.
+
+```{r}
+
+# read in the data
+aus <- read_csv("Assembling_trait_matrix/data/climate_vars.csv", show_col_types = F)
+
+aus = aus %>% mutate(across(leaf_length:leaf_C_per_dry_mass, ~log10(.x), .names="log10_{.col}"),
+                     # a formatting step necessary for the Rphylopars package
+                     species = gsub(" ", "_", taxon_name)) %>% 
+                     select(-taxon_name) %>% 
+                     # remove taxa not in the phylogentic tree
+                     filter(species %in% phylo$tip.label)
+
+#select some traits that will help predict leaf area
+data_in = aus %>% select(
+                         species,
+                         log10_leaf_area, 
+                         log10_leaf_length,
+                         log10_leaf_width,
+                         log10_leaf_mass_per_area,
+                         MAT,
+                         MAP
+                         ) %>% arrange(species)
+
+
+out_with_climate = data.frame()
+
+
+for (i in 1:3){
+
+# For each loop, a different but reproducible random sample of leaf area observations is removed.  
+set.seed(i)
+values_to_NA = sample(which(!is.na(data_in$log10_leaf_area)), length(which(!is.na(data_in$log10_leaf_area)))*0.33)
+
+data_in$log10_leaf_area[values_to_NA] = NA
+
+# Run the phylogenetic comparative analysis
+phylopars_result <-
+  phylopars(trait_data = data_in,
+            tree = phylo,
+            model = "BM")
+
+# Extract the estimated values
+estimated_values <- phylopars_result$anc_recon
+
+est = rownames_to_column(data.frame(estimated_values), var = "species") %>% 
+  # The output computes values for all levels of the phylogeny, hence filter to the original species
+  filter(species %in% data_in$species)
+
+
+# add back in the original log transformed leaf area
+est = left_join(est, aus %>% rename("leaf_area_original"= "log10_leaf_area") %>% select(species, leaf_area_original)) %>% arrange(species)
+
+
+# filter to just those that were removed
+missing_data = est[values_to_NA,]
+
+# R2
+R2 = summary(lm(leaf_area_original ~ log10_leaf_area, data = missing_data))$adj.r.squared
+
+#RMSE
+RMSE = sqrt(mean((missing_data$leaf_area_original - missing_data$log10_leaf_area)^2))
+
+# Uncertainty
+estimated_variance = phylopars_result$anc_var
+
+rownames_to_column(data.frame(estimated_variance), var = "species") %>% 
+  filter(species %in% data_in$species) %>% arrange(species) -> est1
+
+# look at the mean and median Variance for the imputed observations
+mean_var = mean(est1$log10_leaf_area[est1$log10_leaf_area != 0])
+median_var = median(est1$log10_leaf_area[est1$log10_leaf_area != 0])
+
+metrics = data.frame(rep = i, R2 = R2, mean_variance = mean_var, median_variance = median_var)
+
+# store the result
+out_with_climate = rbind(out_with_climate, metrics)
+
+}
+
+
+
+```
+
+# 3
+
+Use a different method such as BHPMF. 
+
+## References
+
+Goolsby, E. W., Bruggeman, J., & Ané, C. (2017). Rphylopars: Fast multivariate phylogenetic comparative methods for missing data and within-species variation. Methods in Ecology and Evolution, 8(1), 22–27. https://doi.org/10.1111/2041-210X.12612
+
+Jin, Y., & Qian, H. (2019). V.PhyloMaker: An R package that can generate very large phylogenies for vascular plants. Ecography, 42(8), 1353–1359. https://doi.org/10.1111/ecog.04434
+
+Johnson, T. F., Isaac, N. J. B., Paviolo, A., & González-Suárez, M. (2021). Handling missing values in trait data. Global Ecology and Biogeography, 30(1), 51–62. https://doi.org/10.1111/geb.13185
+
+Joswig, J. S., Kattge, J., Kraemer, G., Mahecha, M. D., Rüger, N., Schaepman, M. E., Schrodt, F., & Schuman, M. C. (2022). Imputing missing data in plant traits: A guide to improve gap-filling. Global Ecology and Biogeography, n/a(n/a). https://doi.org/10.1111/geb.13695
+
+Madley-Dowd, P., Hughes, R., Tilling, K., & Heron, J. (2019). The proportion of missing data should not be used to guide decisions on multiple imputation. Journal of Clinical Epidemiology, 110, 63–73. https://doi.org/10.1016/j.jclinepi.2019.02.016
+
+Nock, C. A., Vogt, R. J., & Beisner, B. E. (2016). Functional traits. ELS, 1–8.
+Pakeman, R. J. (2014). Functional trait metrics are sensitive to the completeness of the species’ trait data? Methods in Ecology and Evolution, 5(1), 9–15. https://doi.org/10.1111/2041-210X.12136
+
+Van Buuren, S. (2018). Flexible imputation of missing data. CRC press.
+
+
